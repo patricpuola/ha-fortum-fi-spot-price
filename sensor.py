@@ -1,8 +1,10 @@
 
+
 import datetime
 import json
 import logging
 from urllib.parse import urlencode
+import statistics
 
 import aiohttp
 from homeassistant.components.sensor import SensorEntity
@@ -28,35 +30,6 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         FortumSpotPriceSensor(coordinator),
         FortumSpotPriceRankSensor(coordinator)
     ], True)
-    
-class FortumSpotPriceRankSensor(CoordinatorEntity, SensorEntity):
-    """Sensor for the current hour's price rank (nth cheapest hour)."""
-
-    def __init__(self, coordinator):
-        super().__init__(coordinator)
-        self._attr_name = "Fortum FI Spot Price Rank"
-        self._attr_unique_id = "fortum_fi_spot_price_rank"
-
-    @property
-    def native_unit_of_measurement(self):
-        return None
-
-    @property
-    def native_value(self):
-        now_utc = datetime.datetime.now(datetime.timezone.utc).replace(minute=0, second=0, microsecond=0)
-        now_hour_utc = now_utc.strftime("%Y-%m-%dT%H:00:00.000Z")
-        data = self.coordinator.data
-        if not data or now_hour_utc not in data:
-            return None
-        
-        sorted_hours = sorted(data.items(), key=lambda x: x[1])
-        hour_to_price_rank = {hour: price_rank for price_rank, (hour, price) in enumerate(sorted_hours)}
-        return hour_to_price_rank.get(now_hour_utc)
-
-    @property
-    def extra_state_attributes(self):
-        return {}
-
 
 class SpotPriceCoordinator(DataUpdateCoordinator):
     def __init__(self, hass):
@@ -64,8 +37,10 @@ class SpotPriceCoordinator(DataUpdateCoordinator):
             hass,
             _LOGGER,
             name="fortum_fi_spot_price",
-            update_interval=datetime.timedelta(minutes=30),
+            update_interval=datetime.timedelta(hours=1),
         )
+        self._last_fetched_date = None
+        self._last_data = {}
 
     def build_api_url(self, date: str, price_area: str = "FI", resolution: str = "HOUR") -> str:
         base_url = "https://www.fortum.com/fi/sahkoa/api/trpc/shared.spotPrices.listPriceAreaSpotPrices"
@@ -90,6 +65,9 @@ class SpotPriceCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self):
         today = datetime.date.today().isoformat()
+        if self._last_fetched_date == today and self._last_data:
+            return self._last_data
+        
         url = self.build_api_url(today)
         max_retries = 3
         for attempt in range(1, max_retries + 1):
@@ -117,6 +95,9 @@ class SpotPriceCoordinator(DataUpdateCoordinator):
                 except Exception as e:
                     _LOGGER.error("Failed to parse spot price series: %s", e)
                     continue
+                self._last_fetched_date = today
+                self._last_data = prices
+                
                 return prices
             except Exception as e:
                 _LOGGER.error("Error fetching Fortum spot prices (attempt %d/%d): %s", attempt, max_retries, e)
@@ -145,12 +126,50 @@ class FortumSpotPriceSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self):
-        attrs = { "forecast": [] }
-        
-        if self.coordinator.data:
+        attrs = {
+            "forecast": [],
+            "min": None,
+            "max": None,
+            "median": None
+        }
+        data = self.coordinator.data
+        if data:
+            prices = list(data.values())
             forecast = [
                 {"datetime": hour, "value": price}
-                for hour, price in sorted(self.coordinator.data.items())
+                for hour, price in sorted(data.items())
             ]
             attrs["forecast"] = forecast
+            attrs["min"] = min(prices)
+            attrs["max"] = max(prices)
+            attrs["median"] = statistics.median(prices) if prices else None
+        
         return attrs
+
+class FortumSpotPriceRankSensor(CoordinatorEntity, SensorEntity):
+    """Sensor for the current hour's price rank (nth cheapest hour)."""
+
+    def __init__(self, coordinator):
+        super().__init__(coordinator)
+        self._attr_name = "Fortum FI Spot Price Rank"
+        self._attr_unique_id = "fortum_fi_spot_price_rank"
+
+    @property
+    def native_unit_of_measurement(self):
+        return None
+
+    @property
+    def native_value(self):
+        now_utc = datetime.datetime.now(datetime.timezone.utc).replace(minute=0, second=0, microsecond=0)
+        now_hour_utc = now_utc.strftime("%Y-%m-%dT%H:00:00.000Z")
+        data = self.coordinator.data
+        if not data or now_hour_utc not in data:
+            return None
+        
+        sorted_hours = sorted(data.items(), key=lambda x: x[1])
+        hour_to_price_rank = {hour: price_rank for price_rank, (hour, price) in enumerate(sorted_hours)}
+        return hour_to_price_rank.get(now_hour_utc)
+
+    @property
+    def extra_state_attributes(self):
+        return {}

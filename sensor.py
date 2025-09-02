@@ -139,7 +139,7 @@ class FortumSpotPriceSensor(CoordinatorEntity, SensorEntity):
     @property
     def native_value(self):
         # Get current UTC time rounded down to the hour, format to match atUTC keys
-        now_utc = datetime.datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+        now_utc = datetime.datetime.now(datetime.timezone.utc).replace(minute=0, second=0, microsecond=0)
         now_hour_utc = now_utc.strftime("%Y-%m-%dT%H:00:00.000Z")
         return self.coordinator.data.get(now_hour_utc)
 

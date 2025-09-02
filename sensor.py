@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 import aiohttp
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.helpers.update_coordinator import (CoordinatorEntity, DataUpdateCoordinator)
+import homeassistant.util.dt as dt_util
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -57,19 +58,37 @@ class SpotPriceCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self):
         today = datetime.date.today().isoformat()
         url = self.build_api_url(today)
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
-                data = await resp.json()
-
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
             try:
-                series = data[0]["result"]["data"]["json"][0]["spotPriceSeries"]
-            except Exception as e:
-                _LOGGER.error("Failed to parse Fortum API response: %s", e)
-                return {}
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        if resp.status != 200:
+                            _LOGGER.error(f"Fortum API request failed (status %s): %s", resp.status, url)
+                            continue
+                        try:
+                            data = await resp.json()
+                        except Exception as e:
+                            _LOGGER.error("Failed to decode JSON from Fortum API: %s", e)
+                            continue
 
-            # Map atUTC → total price (c/kWh)
-            prices = {p["atUTC"]: p["spotPrice"]["total"] for p in series}
-            return prices
+                try:
+                    series = data[0]["result"]["data"]["json"][0]["spotPriceSeries"]
+                except (KeyError, IndexError, TypeError) as e:
+                    _LOGGER.error("Unexpected Fortum API response structure: %s", e)
+                    continue
+
+                # Map atUTC → total price (c/kWh)
+                try:
+                    prices = {p["atUTC"]: p["spotPrice"]["total"] for p in series}
+                except Exception as e:
+                    _LOGGER.error("Failed to parse spot price series: %s", e)
+                    continue
+                return prices
+            except Exception as e:
+                _LOGGER.error("Error fetching Fortum spot prices (attempt %d/%d): %s", attempt, max_retries, e)
+        _LOGGER.error("All attempts to fetch Fortum spot prices failed.")
+        return {}
 
 
 class FortumSpotPriceSensor(CoordinatorEntity, SensorEntity):
@@ -93,15 +112,29 @@ class FortumSpotPriceSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self):
-        """Expose all hourly prices and sorted hours as attributes."""
-        attrs = dict(self.coordinator.data) if self.coordinator.data else {}
-        # Build sorted list of (hour, price) tuples
+        """Expose all hourly prices, sorted by price, with price rank."""
+        attrs = {}
+
         if self.coordinator.data:
             sorted_hours = sorted(self.coordinator.data.items(), key=lambda x: x[1])
-            # Format as list of dicts for easy templating
-            attrs["sorted_hours"] = [
-                {"hour": hour, "price": price} for hour, price in sorted_hours
-            ]
+            hour_to_price_rank = {hour: price_rank for price_rank, (hour, price) in enumerate(sorted_hours)}
+
+            forecast = []
+            for hour, price in sorted(self.coordinator.data.items()):
+                try:
+                    utc_dt = datetime.datetime.strptime(hour, "%Y-%m-%dT%H:%M:%S.000Z")
+                    utc_dt = utc_dt.replace(tzinfo=datetime.timezone.utc)
+                    local_dt = utc_dt.astimezone(dt_util.DEFAULT_TIME_ZONE)
+                    local_str = local_dt.isoformat()
+                except Exception:
+                    local_str = None
+                forecast.append({
+                    "datetime": hour,
+                    "datetime_local": local_str,
+                    "value": price,
+                    "price_rank": hour_to_price_rank[hour],
+                })
+            attrs["forecast"] = forecast
         else:
-            attrs["sorted_hours"] = []
+            attrs["forecast"] = []
         return attrs

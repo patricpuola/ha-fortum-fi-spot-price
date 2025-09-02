@@ -1,0 +1,11 @@
+{
+    "domain": "fortum_spot_price",
+    "name": "Fortum Spot Price",
+    "version": "0.1.0",
+    "documentation": "https://github.com/patricpuola/ha-fortum-spot-price",
+    "requirements": [],
+    "codeowners": [
+        "@patricpuola"
+    ],
+    "iot_class": "cloud_polling"
+}

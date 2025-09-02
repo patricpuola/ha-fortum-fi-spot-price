@@ -1,5 +1,3 @@
-
-
 import datetime
 import json
 import logging
@@ -37,7 +35,7 @@ class SpotPriceCoordinator(DataUpdateCoordinator):
             hass,
             _LOGGER,
             name="fortum_fi_spot_price",
-            update_interval=datetime.timedelta(hours=1),
+            update_interval=datetime.timedelta(minutes=10),
         )
         self._last_fetched_date = None
         self._last_data = {}
@@ -127,7 +125,6 @@ class FortumSpotPriceSensor(CoordinatorEntity, SensorEntity):
     @property
     def extra_state_attributes(self):
         attrs = {
-            "forecast": [],
             "min": None,
             "max": None,
             "median": None
@@ -135,16 +132,15 @@ class FortumSpotPriceSensor(CoordinatorEntity, SensorEntity):
         data = self.coordinator.data
         if data:
             prices = list(data.values())
-            forecast = [
-                {"datetime": hour, "value": price}
-                for hour, price in sorted(data.items())
-            ]
-            attrs["forecast"] = forecast
-            attrs["min"] = min(prices)
-            attrs["max"] = max(prices)
+            attrs["min"] = min(prices) if prices else None
+            attrs["max"] = max(prices) if prices else None
             attrs["median"] = statistics.median(prices) if prices else None
         
         return attrs
+
+    @property
+    def icon(self):
+        return "mdi:currency-eur"
 
 class FortumSpotPriceRankSensor(CoordinatorEntity, SensorEntity):
     """Sensor for the current hour's price rank (nth cheapest hour)."""
@@ -173,3 +169,7 @@ class FortumSpotPriceRankSensor(CoordinatorEntity, SensorEntity):
     @property
     def extra_state_attributes(self):
         return {}
+
+    @property
+    def icon(self):
+        return "mdi:lightbulb-multiple-outline"

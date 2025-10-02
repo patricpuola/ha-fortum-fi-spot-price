@@ -35,12 +35,12 @@ class SpotPriceCoordinator(DataUpdateCoordinator):
             hass,
             _LOGGER,
             name="fortum_fi_spot_price",
-            update_interval=datetime.timedelta(minutes=10),
+            update_interval=datetime.timedelta(minutes=1),
         )
         self._last_fetched_date = None
         self._last_data = {}
 
-    def build_api_url(self, date: str, price_area: str = "FI", resolution: str = "HOUR") -> str:
+    def build_api_url(self, date: str, price_area: str = "FI", resolution: str = "PER_15_MIN") -> str:
         base_url = "https://www.fortum.com/fi/sahkoa/api/trpc/shared.spotPrices.listPriceAreaSpotPrices"
         input_dict = {
             "0": {
@@ -104,12 +104,12 @@ class SpotPriceCoordinator(DataUpdateCoordinator):
 
 
 class FortumSpotPriceSensor(CoordinatorEntity, SensorEntity):
-    """Sensor for the current hour's spot price."""
+    """Sensor for the current 15min's spot price."""
 
     def __init__(self, coordinator):
         super().__init__(coordinator)
-        self._attr_name = "Fortum FI Spot Price"
-        self._attr_unique_id = "fortum_fi_spot_price"
+        self._attr_name = "Fortum FI Spot Price 15min"
+        self._attr_unique_id = "fortum_fi_spot_price_15min"
 
     @property
     def native_unit_of_measurement(self):
@@ -117,10 +117,13 @@ class FortumSpotPriceSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self):
-        # Get current UTC time rounded down to the hour, format to match atUTC keys
-        now_utc = datetime.datetime.now(datetime.timezone.utc).replace(minute=0, second=0, microsecond=0)
-        now_hour_utc = now_utc.strftime("%Y-%m-%dT%H:00:00.000Z")
-        return self.coordinator.data.get(now_hour_utc)
+        # Get current UTC time rounded down to the last 15min, format to match atUTC keys
+        minute_thresholds = [0, 15, 30, 45]
+        now_utc = datetime.datetime.now(datetime.timezone.utc).replace(second=0, microsecond=0)
+        minute = max(m for m in minute_thresholds if m <= now_utc.minute)
+        now_utc = now_utc.replace(minute=minute)
+        last_15min_utc = now_utc.strftime("%Y-%m-%dT%H:%M:00.000Z")
+        return self.coordinator.data.get(last_15min_utc)
 
     @property
     def extra_state_attributes(self):
@@ -143,12 +146,12 @@ class FortumSpotPriceSensor(CoordinatorEntity, SensorEntity):
         return "mdi:currency-eur"
 
 class FortumSpotPriceRankSensor(CoordinatorEntity, SensorEntity):
-    """Sensor for the current hour's price rank (nth cheapest hour)."""
+    """Sensor for the current 15min's price rank (nth cheapest 15min)."""
 
     def __init__(self, coordinator):
         super().__init__(coordinator)
-        self._attr_name = "Fortum FI Spot Price Rank"
-        self._attr_unique_id = "fortum_fi_spot_price_rank"
+        self._attr_name = "Fortum FI Spot Price Rank 15min"
+        self._attr_unique_id = "fortum_fi_spot_price_rank_15min"
 
     @property
     def native_unit_of_measurement(self):
@@ -156,15 +159,19 @@ class FortumSpotPriceRankSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self):
-        now_utc = datetime.datetime.now(datetime.timezone.utc).replace(minute=0, second=0, microsecond=0)
-        now_hour_utc = now_utc.strftime("%Y-%m-%dT%H:00:00.000Z")
+        # Get current UTC time rounded down to the last 15min, format to match atUTC keys
+        minute_thresholds = [0, 15, 30, 45]
+        now_utc = datetime.datetime.now(datetime.timezone.utc).replace(second=0, microsecond=0)
+        minute = max(m for m in minute_thresholds if m <= now_utc.minute)
+        now_utc = now_utc.replace(minute=minute)
+        last_15min_utc = now_utc.strftime("%Y-%m-%dT%H:%M:00.000Z")
         data = self.coordinator.data
-        if not data or now_hour_utc not in data:
+        if not data or last_15min_utc not in data:
             return None
         
-        sorted_hours = sorted(data.items(), key=lambda x: x[1])
-        hour_to_price_rank = {hour: price_rank for price_rank, (hour, price) in enumerate(sorted_hours)}
-        return hour_to_price_rank.get(now_hour_utc)
+        sorted_time_intervals = sorted(data.items(), key=lambda x: x[1])
+        time_to_price_rank = {time: price_rank for price_rank, (time, price) in enumerate(sorted_time_intervals)}
+        return time_to_price_rank.get(last_15min_utc)
 
     @property
     def extra_state_attributes(self):

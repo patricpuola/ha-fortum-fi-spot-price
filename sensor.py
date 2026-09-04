@@ -15,8 +15,10 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     coordinator = SpotPriceCoordinator(hass)
     await coordinator.async_config_entry_first_refresh()
     async_add_entities([
-        FortumSpotPriceSensor(coordinator),
-        FortumSpotPriceRankSensor(coordinator)
+        FortumSpotPrice15minSensor(coordinator),
+        FortumSpotPrice15minRankSensor(coordinator),
+        FortumSpotPriceHourSensor(coordinator),
+        FortumSpotPriceHourRankSensor(coordinator)
     ], True)
 
 
@@ -25,8 +27,10 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     coordinator = SpotPriceCoordinator(hass)
     await coordinator.async_config_entry_first_refresh()
     async_add_entities([
-        FortumSpotPriceSensor(coordinator),
-        FortumSpotPriceRankSensor(coordinator)
+        FortumSpotPrice15minSensor(coordinator),
+        FortumSpotPrice15minRankSensor(coordinator),
+        FortumSpotPriceHourSensor(coordinator),
+        FortumSpotPriceHourRankSensor(coordinator)
     ], True)
 
 class SpotPriceCoordinator(DataUpdateCoordinator):
@@ -65,51 +69,59 @@ class SpotPriceCoordinator(DataUpdateCoordinator):
         today = datetime.date.today().isoformat()
         if self._last_fetched_date == today and self._last_data:
             return self._last_data
-        
-        url = self.build_api_url(today)
+
         max_retries = 3
-        for attempt in range(1, max_retries + 1):
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                        if resp.status != 200:
-                            _LOGGER.error(f"Fortum API request failed (status %s): %s", resp.status, url)
-                            continue
-                        try:
-                            data = await resp.json()
-                        except Exception as e:
-                            _LOGGER.error("Failed to decode JSON from Fortum API: %s", e)
-                            continue
-
+        prices_by_resolution = {}
+        for resolution in ("PER_15_MIN", "HOUR"):
+            url = self.build_api_url(today, resolution=resolution)
+            for attempt in range(1, max_retries + 1):
                 try:
-                    series = data[0]["result"]["data"]["json"][0]["spotPriceSeries"]
-                except (KeyError, IndexError, TypeError) as e:
-                    _LOGGER.error("Unexpected Fortum API response structure: %s", e)
-                    continue
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                            if resp.status != 200:
+                                _LOGGER.error(f"Fortum API request failed (status %s): %s", resp.status, url)
+                                continue
+                            try:
+                                data = await resp.json()
+                            except Exception as e:
+                                _LOGGER.error("Failed to decode JSON from Fortum API: %s", e)
+                                continue
 
-                # Map atUTC → total price (c/kWh)
-                try:
-                    prices = {p["atUTC"]: p["spotPrice"]["total"] for p in series}
+                    try:
+                        series = data[0]["result"]["data"]["json"][0]["spotPriceSeries"]
+                    except (KeyError, IndexError, TypeError) as e:
+                        _LOGGER.error("Unexpected Fortum API response structure: %s", e)
+                        continue
+
+                    try:
+                        prices_by_resolution[resolution] = {
+                            p["atUTC"]: p["spotPrice"]["total"] for p in series
+                        }
+                    except Exception as e:
+                        _LOGGER.error("Failed to parse spot price series: %s", e)
+                        continue
+                    break
                 except Exception as e:
-                    _LOGGER.error("Failed to parse spot price series: %s", e)
-                    continue
-                self._last_fetched_date = today
-                self._last_data = prices
-                
-                return prices
-            except Exception as e:
-                _LOGGER.error("Error fetching Fortum spot prices (attempt %d/%d): %s", attempt, max_retries, e)
-        _LOGGER.error("All attempts to fetch Fortum spot prices failed.")
-        return {}
+                    _LOGGER.error("Error fetching Fortum spot prices (attempt %d/%d): %s", attempt, max_retries, e)
+
+            if resolution not in prices_by_resolution:
+                _LOGGER.error("All attempts to fetch %s Fortum spot prices failed.", resolution)
+                return {}
+
+        self._last_fetched_date = today
+        self._last_data = prices_by_resolution
+        return prices_by_resolution
 
 
-class FortumSpotPriceSensor(CoordinatorEntity, SensorEntity):
+class FortumSpotPrice15minSensor(CoordinatorEntity, SensorEntity):
     """Sensor for the current 15min's spot price."""
 
     def __init__(self, coordinator):
         super().__init__(coordinator)
         self._attr_name = "Fortum FI Spot Price 15min"
         self._attr_unique_id = "fortum_fi_spot_price_15min"
+        self._data_key = "PER_15_MIN"
+        self._interval_minutes = 15
 
     @property
     def native_unit_of_measurement(self):
@@ -118,12 +130,11 @@ class FortumSpotPriceSensor(CoordinatorEntity, SensorEntity):
     @property
     def native_value(self):
         # Get current UTC time rounded down to the last 15min, format to match atUTC keys
-        minute_thresholds = [0, 15, 30, 45]
         now_utc = datetime.datetime.now(datetime.timezone.utc).replace(second=0, microsecond=0)
-        minute = max(m for m in minute_thresholds if m <= now_utc.minute)
+        minute = now_utc.minute - (now_utc.minute % self._interval_minutes)
         now_utc = now_utc.replace(minute=minute)
-        last_15min_utc = now_utc.strftime("%Y-%m-%dT%H:%M:00.000Z")
-        return self.coordinator.data.get(last_15min_utc)
+        interval_utc = now_utc.strftime("%Y-%m-%dT%H:%M:00.000Z")
+        return self.coordinator.data.get(self._data_key, {}).get(interval_utc)
 
     @property
     def extra_state_attributes(self):
@@ -132,20 +143,20 @@ class FortumSpotPriceSensor(CoordinatorEntity, SensorEntity):
             "max": None,
             "median": None
         }
-        data = self.coordinator.data
+        data = self.coordinator.data.get(self._data_key, {})
         if data:
             prices = list(data.values())
             attrs["min"] = min(prices) if prices else None
             attrs["max"] = max(prices) if prices else None
             attrs["median"] = statistics.median(prices) if prices else None
-        
+
         return attrs
 
     @property
     def icon(self):
         return "mdi:currency-eur"
 
-class FortumSpotPriceRankSensor(CoordinatorEntity, SensorEntity):
+class FortumSpotPrice15minRankSensor(CoordinatorEntity, SensorEntity):
     """Sensor for the current 15min's price rank (nth cheapest 15min)."""
 
     def __init__(self, coordinator):
@@ -160,18 +171,17 @@ class FortumSpotPriceRankSensor(CoordinatorEntity, SensorEntity):
     @property
     def native_value(self):
         # Get current UTC time rounded down to the last 15min, format to match atUTC keys
-        minute_thresholds = [0, 15, 30, 45]
         now_utc = datetime.datetime.now(datetime.timezone.utc).replace(second=0, microsecond=0)
-        minute = max(m for m in minute_thresholds if m <= now_utc.minute)
+        minute = now_utc.minute - (now_utc.minute % self._interval_minutes)
         now_utc = now_utc.replace(minute=minute)
-        last_15min_utc = now_utc.strftime("%Y-%m-%dT%H:%M:00.000Z")
-        data = self.coordinator.data
-        if not data or last_15min_utc not in data:
+        interval_utc = now_utc.strftime("%Y-%m-%dT%H:%M:00.000Z")
+        data = self.coordinator.data.get(self._data_key, {})
+        if not data or interval_utc not in data:
             return None
-        
+
         sorted_time_intervals = sorted(data.items(), key=lambda x: x[1])
         time_to_price_rank = {time: price_rank for price_rank, (time, price) in enumerate(sorted_time_intervals)}
-        return time_to_price_rank.get(last_15min_utc)
+        return time_to_price_rank.get(interval_utc)
 
     @property
     def extra_state_attributes(self):
@@ -180,3 +190,26 @@ class FortumSpotPriceRankSensor(CoordinatorEntity, SensorEntity):
     @property
     def icon(self):
         return "mdi:lightbulb-multiple-outline"
+
+
+class FortumSpotPriceHourSensor(FortumSpotPrice15minSensor):
+    """Sensor for the current hour's spot price."""
+
+    def __init__(self, coordinator):
+        super().__init__(coordinator)
+        self._attr_name = "Fortum FI Spot Price Hour"
+        self._attr_unique_id = "fortum_fi_spot_price_hour"
+        self._data_key = "HOUR"
+        self._interval_minutes = 60
+
+
+class FortumSpotPriceHourRankSensor(FortumSpotPrice15minRankSensor):
+    """Sensor for the current hour's price rank."""
+
+    def __init__(self, coordinator):
+        super().__init__(coordinator)
+        self._attr_name = "Fortum FI Spot Price Rank Hour"
+        self._attr_unique_id = "fortum_fi_spot_price_rank_hour"
+        self._data_key = "HOUR"
+        self._interval_minutes = 60
+

@@ -163,6 +163,8 @@ class FortumSpotPrice15minRankSensor(CoordinatorEntity, SensorEntity):
         super().__init__(coordinator)
         self._attr_name = "Fortum FI Spot Price Rank 15min"
         self._attr_unique_id = "fortum_fi_spot_price_rank_15min"
+        self._data_key = "PER_15_MIN"
+        self._interval_minutes = 15
 
     @property
     def native_unit_of_measurement(self):

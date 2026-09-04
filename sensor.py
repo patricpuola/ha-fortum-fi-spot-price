@@ -39,7 +39,7 @@ class SpotPriceCoordinator(DataUpdateCoordinator):
             hass,
             _LOGGER,
             name="fortum_fi_spot_price",
-            update_interval=datetime.timedelta(minutes=1),
+            update_interval=datetime.timedelta(minutes=3),
         )
         self._last_fetched_date = None
         self._last_data = {}

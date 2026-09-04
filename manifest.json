@@ -1,11 +1,9 @@
 {
-    "domain": "fortum_fi_spot_price",
-    "name": "Fortum FI Spot Price",
-    "version": "0.1.0",
-    "documentation": "https://github.com/patricpuola/ha-fortum-fi-spot-price",
-    "requirements": [],
-    "codeowners": [
-        "@patricpuola"
-    ],
-    "iot_class": "cloud_polling"
+  "domain": "fortum_fi_spot_price",
+  "name": "Fortum FI Spot Price",
+  "version": "0.2.0",
+  "documentation": "https://github.com/patricpuola/ha-fortum-fi-spot-price",
+  "requirements": [],
+  "codeowners": ["@patricpuola"],
+  "iot_class": "cloud_polling"
 }
